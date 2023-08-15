@@ -1,0 +1,9 @@
+name: simplex
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip=22.2.2
+  - flake8
+  - black
+  - pandas
