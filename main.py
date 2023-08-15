@@ -68,27 +68,184 @@ def setup_initial_tableau(objective_coeffs, constraints):
     return tableau
 
 
+def check_for_optimality(tableau):
+    """
+    Check if the current tableau represents an optimal solution.
+
+    Parameters:
+    - tableau (numpy array): The current tableau of the LP problem.
+
+    Returns:
+    - bool: True if the solution is optimal, False otherwise.
+    """
+    # The solution is optimal if all coefficients in the last row (objective function row) are non-negative
+    return np.all(tableau[0, :-1] >= 0)
+
+
+def get_basis_variables(tableau):
+    """
+    Get the row and column indices of the basic variables in the current tableau.
+
+    Parameters:
+    - tableau (numpy array): The current tableau of the LP problem.
+
+    Returns:
+    - basis (list of tuple): Each tuple contains the row and column indices of a basic variable.
+    """
+    num_rows, num_cols = tableau.shape
+    basis = []
+
+    # Iterate through columns (excluding the RHS column)
+    for j in range(num_cols - 1):
+        col = tableau[:, j]
+
+        # Check if the column has exactly one entry of 1 and all others are 0
+        if np.sum(col == 1) == 1 and np.sum(col == 0) == num_rows - 1:
+            # Get the row index of the 1 entry in the column
+            row_idx = np.where(col == 1)[0][0]
+            basis.append((row_idx, j))
+
+    return basis
+
+
+def choose_entering_variable(tableau):
+    """
+    Choose the entering variable for the pivoting step.
+
+    Parameters:
+    - tableau (numpy array): The current tableau of the LP problem.
+
+    Returns:
+    - int: The index of the entering variable, or None if the solution is optimal.
+    """
+    # Objective function row is the first row
+    obj_row = tableau[0, :-1]  # Exclude the RHS value
+
+    # Identify the most negative coefficient
+    min_coeff = np.min(obj_row)
+
+    # If all coefficients are non-negative, the solution is optimal
+    if min_coeff >= 0:
+        return None
+
+    # Return the index of the most negative coefficient
+    return np.argmin(obj_row)
+
+
+def choose_departing_variable(tableau, entering_col):
+    """
+    Choose the departing variable for the pivoting step.
+
+    Parameters:
+    - tableau (numpy array): The current tableau of the LP problem.
+    - entering_col (int): The index of the entering variable/column.
+
+    Returns:
+    - int: The index of the departing variable/row.
+    """
+    # Get the number of rows in the tableau
+    num_rows = tableau.shape[0]
+
+    # Initialize ratios with infinity (so they don't interfere with the minimum)
+    ratios = np.full(num_rows, np.inf)
+
+    # Only compute ratios for rows where the value in the entering column is positive
+    positive_rows = tableau[:, entering_col] > 0
+    ratios[positive_rows] = tableau[positive_rows, -1] / tableau[positive_rows, entering_col]
+
+    # Return the row index of the smallest ratio
+    return np.argmin(ratios)
+
+
+def pivot(tableau, entering_col, departing_row):
+    """
+    Perform the pivot operation to update the tableau.
+
+    Parameters:
+    - tableau (numpy array): The current tableau of the LP problem.
+    - entering_col (int): The index of the entering variable/column.
+    - departing_row (int): The index of the departing variable/row.
+
+    Returns:
+    - numpy array: The updated tableau.
+    """
+    # Create a copy of the tableau to avoid modifying the original
+    new_tableau = tableau.copy()
+
+    # Scale the departing row
+    pivot_value = tableau[departing_row, entering_col]
+    new_tableau[departing_row, :] /= pivot_value
+
+    # Update the other rows
+    for i in range(tableau.shape[0]):
+        # Skip the departing row
+        if i != departing_row:
+            factor = tableau[i, entering_col]
+            new_tableau[i, :] -= factor * new_tableau[departing_row, :]
+
+    return new_tableau
+
+
+def extract_solution(tableau, rounding_accuracy=2):
+    """
+    Extract the solution (values of decision variables) from the final tableau.
+
+    Parameters:
+    - tableau (numpy array): The final tableau of the LP problem.
+    - rounding_accuracy (int): Number of decimal places to round the solution values.
+
+    Returns:
+    - solution (dict): A dictionary where keys are variable names (e.g., "x1") and values are the corresponding values.
+    """
+    basis_vars = get_basis_variables(tableau)
+    solution = {}
+
+    # For each basic variable, fetch its value
+    for row, col in basis_vars:
+        solution[f"x{col}"] = round(tableau[row, -1], rounding_accuracy)
+
+    return solution
+
+
 def display_tableau(tableau):
+    """
+    Display the tableau with the basis variables.
+
+    Parameters:
+    - tableau (numpy array): The current tableau of the LP problem.
+
+    Returns:
+    - str: A string representation of the tableau with basis variables.
+    """
+    # Getting the basis variables (row, col) pairs
+    basis_vars = get_basis_variables(tableau)
+
+    # Extracting just the column values to use for naming
+    basis_rows = {row: col for row, col in basis_vars}
+
     rows, cols = tableau.shape
     table_str = ""
 
-    # Adjusting for x0 representation for the objective function
-    header = ["x" + str(i) for i in range(cols - 1)] + ["RHS"]
+    # Determine the width for each column
+    header = ["Basis"] + ["x" + str(i) for i in range(cols - 1)] + ["RHS"]
     max_lengths = [
-        max(
-            len(header[i]),
-            max(len("{:.2f}".format(row[i])) for row in tableau),
-        )
-        for i in range(cols)
+        max(len(header[i]), max(len("{:.2f}".format(row[i - 1])) for row in tableau))
+        for i in range(1, cols + 1)
     ]
 
-    # Header with dynamic width
-    table_str += " | ".join([header[i].rjust(max_lengths[i]) for i in range(cols)]) + "\n"
-    table_str += "-" * (sum(max_lengths) + 3 * (cols - 1)) + "\n"  # Separator
+    # Add width for Basis column
+    max_lengths = [max(len(header[0]), 5)] + max_lengths
 
-    # Rows with dynamic width
-    for row in tableau:
-        formatted_row = ["{:.2f}".format(val).rjust(max_lengths[i]) for i, val in enumerate(row)]
+    # Header with dynamic width
+    table_str += " | ".join([header[i].rjust(max_lengths[i]) for i in range(cols + 1)]) + "\n"
+    table_str += "-" * (sum(max_lengths) + 3 * cols) + "\n"  # Separator
+
+    # Rows with dynamic width (with basis)
+    for i, row in enumerate(tableau):
+        basis_col = [("x" + str(basis_rows[i])).ljust(max_lengths[0])]
+        formatted_row = basis_col + [
+            "{:.2f}".format(val).rjust(max_lengths[j + 1]) for j, val in enumerate(row)
+        ]
         table_str += " | ".join(formatted_row) + "\n"
 
     return table_str
@@ -137,14 +294,40 @@ def display_constraints_with_objective(objective_coeffs, constraints):
     return table_str
 
 
+# read from file
 in_file = "in.txt"
 objective_type, objective_coeffs, constraints = import_from_file(in_file)
 print("\n*** START ***")
 print(f"Read from file: {in_file}")
-print(f"Objective type: {objective_type.upper()}\n")
+print(f"Objective type: {objective_type.upper()}")
 print(display_constraints_with_objective(objective_coeffs, constraints))
-print("\nSetting up initial tableau...")
+
+# setup initial tableau
 tableau = setup_initial_tableau(objective_coeffs, constraints)
-print("\nInitial Tableau:")
+print("Initial Tableau:")
 print(display_tableau(tableau))
+basis_vars = get_basis_variables(tableau)
+basis = ", ".join([f"x{col}" for _, col in basis_vars])
+print(f"Basic variables: {basis}\n")
+
+# simplex algorithm
+optimality = check_for_optimality(tableau)
+while not optimality:
+    entering_variable = choose_entering_variable(tableau)
+    departing_variable = choose_departing_variable(tableau, entering_variable)
+    tableau = pivot(tableau, entering_variable, departing_variable)
+    print(f"Entering variable: x{entering_variable}")
+    print(f"Departing variable: x{basis[departing_variable]}")
+    print(display_tableau(tableau))
+    basis_vars = get_basis_variables(tableau)
+    basis = ", ".join([f"x{col}" for _, col in basis_vars])
+    print(f"Basic variables: {basis}\n")
+
+    optimality = check_for_optimality(tableau)
+
+print("Solution is optimal.")
+
+solution = extract_solution(tableau)
+print(f"Solution: {solution}")
+
 print("\n*** END ***")
