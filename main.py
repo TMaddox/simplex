@@ -1,4 +1,6 @@
 import numpy as np
+import pandas as pd
+from prettytable import PrettyTable
 
 
 def import_from_file(filename):
@@ -33,37 +35,77 @@ def import_from_file(filename):
     return objective_type, objective_coeffs, constraints
 
 
-def setup_initial_tableau(objective_coeffs, constraints):
-    # Number of original variables (including x0)
-    num_vars = len(objective_coeffs) + 1
+def setup_initial_tableau(objective_coeffs, constraints, include_helper=False):
+    n_vars = len(objective_coeffs)
+    n_constraints = len(constraints)
+    n_slack = sum(1 for _, relation, _ in constraints if relation != "=")
+    n_helper = sum(1 for _, relation, _ in constraints if relation == "=" or relation == ">=")
 
-    # Number of constraints (and hence potential slack variables)
-    num_constraints = len(constraints)
+    # Initialize an empty DataFrame
+    tableau = pd.DataFrame()
 
-    # Counting the total number of slack variables (excluding those for '=' constraints)
-    num_slack_vars = sum(1 for _, relation, _ in constraints if relation != "=")
+    # Add columns for variables
+    #
+    for i in range(1, n_vars + 1):
+        tableau[f"x{i}"] = [constr[0][i - 1] for constr in constraints]
 
-    # Initialize the tableau with zeros
-    tableau = np.zeros((num_constraints + 1, num_vars + num_slack_vars + 1))
-
-    # Set the objective function coefficients
-    tableau[0, 0] = 1  # Coefficient for x0
-    tableau[0, 1:num_vars] = -np.array(objective_coeffs)  # Coefficients for x1, x2, ...
-
-    # Set the coefficients of the slack variables and right-hand side values
-    for i, (coeffs, relation, rhs) in enumerate(constraints, 1):
-        # Coefficients of the original variables
-        tableau[i, :num_vars] = [0] + coeffs  # 1 for x0 and then the coefficients for x1, x2, ...
-
-        # Coefficient for the slack variable (1 or -1 based on the relation)
+    # Add columns for slack variables
+    i_slack = 1
+    for idx in range(n_constraints):
+        relation = constraints[idx][1]
         if relation == "<=":
-            tableau[i, num_vars + i - 1] = 1
+            tableau[f"s{i_slack}"] = [1 if j == idx else 0 for j in range(n_constraints)]
+            i_slack += 1
         elif relation == ">=":
-            tableau[i, num_vars + i - 1] = -1
-        # If it's '=', we don't need to add a slack variable
+            tableau[f"s{i_slack}"] = [-1 if j == idx else 0 for j in range(n_constraints)]
+            i_slack += 1
+        # no slack variable for equality constraints
 
-        # Right-hand side value
-        tableau[i, -1] = rhs
+    # Add RHS column
+    tableau["RHS"] = [constr[2] for constr in constraints]
+
+    # Add objective function
+    tableau.loc[-1] = [-coeff for coeff in objective_coeffs] + [0] * n_slack + [0]
+    tableau.index = tableau.index + 1
+    tableau.sort_index(inplace=True)
+    tableau.insert(0, "x0", [1] + [0] * n_constraints)
+
+    if include_helper:
+        # Add columns for helper variables
+        i_helper = 1
+        for idx in range(n_constraints):
+            relation = constraints[idx][1]
+            if relation == "=":
+                tableau.insert(
+                    tableau.shape[1] - 1,
+                    f"h{i_helper}",
+                    [0] + [1 if j == idx else 0 for j in range(n_constraints)],
+                )
+                i_helper += 1
+            elif relation == ">=":
+                tableau.insert(
+                    tableau.shape[1] - 1,
+                    f"h{i_helper}",
+                    [0] + [1 if j == idx else 0 for j in range(n_constraints)],
+                )
+                i_helper += 1
+            # no helper variable for <= constraints
+
+        tableau.insert(0, "x-1", [0] + [0] * n_constraints)
+
+        # Add row for helper objective function
+        helper_obj_row = pd.Series([0] * tableau.shape[1], dtype="float64", index=tableau.columns)
+        for hdx in range(1, n_helper + 1):
+            for row in range(1, n_constraints + 1):
+                if tableau[f"h{hdx}"][row] == 1:
+                    helper_obj_row -= tableau.iloc[row]
+
+        helper_obj_row["x-1"] = 1
+        for hdx in range(1, n_helper + 1):
+            helper_obj_row[f"h{hdx}"] = 0
+        tableau.loc[-1] = helper_obj_row
+        tableau.index = tableau.index + 1
+        tableau.sort_index(inplace=True)
 
     return tableau
 
@@ -73,37 +115,37 @@ def check_for_optimality(tableau):
     Check if the current tableau represents an optimal solution.
 
     Parameters:
-    - tableau (numpy array): The current tableau of the LP problem.
+    - tableau (pandas DataFrame): The current tableau of the LP problem.
 
     Returns:
     - bool: True if the solution is optimal, False otherwise.
     """
-    # The solution is optimal if all coefficients in the last row (objective function row) are non-negative
-    return np.all(tableau[0, :-1] >= 0)
+    # The solution is optimal if all coefficients in the first row (objective function row) are non-negative
+    return tableau.iloc[0, :-1].ge(0).all()
 
 
-def get_basis_variables(tableau):
+def get_basis_variables(tableau_df):
     """
-    Get the row and column indices of the basic variables in the current tableau.
+    Get the row indices and column names of the basic variables in the current tableau.
 
     Parameters:
-    - tableau (numpy array): The current tableau of the LP problem.
+    - tableau_df (pandas DataFrame): The current tableau of the LP problem.
 
     Returns:
-    - basis (list of tuple): Each tuple contains the row and column indices of a basic variable.
+    - basis (list of tuple): Each tuple contains the row index and column name of a basic variable.
     """
-    num_rows, num_cols = tableau.shape
+    num_rows = tableau_df.shape[0]
     basis = []
 
     # Iterate through columns (excluding the RHS column)
-    for j in range(num_cols - 1):
-        col = tableau[:, j]
+    for col_name in tableau_df.columns[:-1]:
+        col = tableau_df[col_name]
 
         # Check if the column has exactly one entry of 1 and all others are 0
-        if np.sum(col == 1) == 1 and np.sum(col == 0) == num_rows - 1:
+        if (col == 1).sum() == 1 and (col == 0).sum() == num_rows - 1:
             # Get the row index of the 1 entry in the column
-            row_idx = np.where(col == 1)[0][0]
-            basis.append((row_idx, j))
+            row_idx = col[col == 1].index[0]
+            basis.append((row_idx, col_name))
 
     return basis
 
@@ -113,23 +155,23 @@ def choose_entering_variable(tableau):
     Choose the entering variable for the pivoting step.
 
     Parameters:
-    - tableau (numpy array): The current tableau of the LP problem.
+    - tableau (pandas DataFrame): The current tableau of the LP problem.
 
     Returns:
-    - int: The index of the entering variable, or None if the solution is optimal.
+    - str: The column name of the entering variable, or None if the solution is optimal.
     """
     # Objective function row is the first row
-    obj_row = tableau[0, :-1]  # Exclude the RHS value
+    obj_row = tableau.iloc[0, :-1]  # Exclude the RHS value
 
     # Identify the most negative coefficient
-    min_coeff = np.min(obj_row)
+    min_coeff = obj_row.min()
 
     # If all coefficients are non-negative, the solution is optimal
     if min_coeff >= 0:
         return None
 
-    # Return the index of the most negative coefficient
-    return np.argmin(obj_row)
+    # Return the column name of the most negative coefficient
+    return obj_row.idxmin()
 
 
 def choose_departing_variable(tableau, entering_col):
@@ -137,24 +179,18 @@ def choose_departing_variable(tableau, entering_col):
     Choose the departing variable for the pivoting step.
 
     Parameters:
-    - tableau (numpy array): The current tableau of the LP problem.
-    - entering_col (int): The index of the entering variable/column.
+    - tableau (pandas DataFrame): The current tableau of the LP problem.
+    - entering_col (str): The column name of the entering variable.
 
     Returns:
     - int: The index of the departing variable/row.
     """
-    # Get the number of rows in the tableau
-    num_rows = tableau.shape[0]
-
-    # Initialize ratios with infinity (so they don't interfere with the minimum)
-    ratios = np.full(num_rows, np.inf)
-
     # Only compute ratios for rows where the value in the entering column is positive
-    positive_rows = tableau[:, entering_col] > 0
-    ratios[positive_rows] = tableau[positive_rows, -1] / tableau[positive_rows, entering_col]
+    positive_rows = tableau[entering_col] > 0
+    positive_ratios = tableau.loc[positive_rows, "RHS"] / tableau.loc[positive_rows, entering_col]
 
     # Return the row index of the smallest ratio
-    return np.argmin(ratios)
+    return positive_ratios.idxmin()
 
 
 def pivot(tableau, entering_col, departing_row):
@@ -162,26 +198,26 @@ def pivot(tableau, entering_col, departing_row):
     Perform the pivot operation to update the tableau.
 
     Parameters:
-    - tableau (numpy array): The current tableau of the LP problem.
-    - entering_col (int): The index of the entering variable/column.
+    - tableau (pandas DataFrame): The current tableau of the LP problem.
+    - entering_col (str): The column name of the entering variable.
     - departing_row (int): The index of the departing variable/row.
 
     Returns:
-    - numpy array: The updated tableau.
+    - pandas DataFrame: The updated tableau.
     """
     # Create a copy of the tableau to avoid modifying the original
     new_tableau = tableau.copy()
 
     # Scale the departing row
-    pivot_value = tableau[departing_row, entering_col]
-    new_tableau[departing_row, :] /= pivot_value
+    pivot_value = tableau.loc[departing_row, entering_col]
+    new_tableau.loc[departing_row] /= pivot_value
 
     # Update the other rows
-    for i in range(tableau.shape[0]):
+    for i in tableau.index:
         # Skip the departing row
         if i != departing_row:
-            factor = tableau[i, entering_col]
-            new_tableau[i, :] -= factor * new_tableau[departing_row, :]
+            factor = tableau.loc[i, entering_col]
+            new_tableau.loc[i] -= factor * new_tableau.loc[departing_row]
 
     return new_tableau
 
@@ -191,7 +227,7 @@ def extract_solution(tableau, rounding_accuracy=2):
     Extract the solution (values of decision variables) from the final tableau.
 
     Parameters:
-    - tableau (numpy array): The final tableau of the LP problem.
+    - tableau (pandas DataFrame): The final tableau of the LP problem.
     - rounding_accuracy (int): Number of decimal places to round the solution values.
 
     Returns:
@@ -201,133 +237,139 @@ def extract_solution(tableau, rounding_accuracy=2):
     solution = {}
 
     # For each basic variable, fetch its value
-    for row, col in basis_vars:
-        solution[f"x{col}"] = round(tableau[row, -1], rounding_accuracy)
+    for row, col_name in basis_vars:
+        solution[col_name] = round(tableau.iloc[row]["RHS"], rounding_accuracy)
 
-    return solution
+    # Add zeros for non-basis variables
+    for col_name in tableau.columns[:-1]:  # excluding the "RHS" column
+        if col_name not in solution:
+            solution[col_name] = 0
+
+    # Sort the dictionary based on the variable names
+    sorted_solution = {k: solution[k] for k in sorted(solution)}
+
+    return sorted_solution
 
 
-def display_tableau(tableau):
+def get_constraints_str(objective_coeffs, constraints):
+    num_coeffs = len(objective_coeffs)
+
+    # Create a new pretty table
+    pt = PrettyTable()
+
+    # Set the column names
+    header = ["Coeff" + str(i + 1) for i in range(num_coeffs)] + ["Relation", "RHS"]
+    pt.field_names = header
+
+    # Adding the objective coefficients row
+    obj_row = ["{:.2f}".format(val) for val in objective_coeffs] + ["Obj. Func.", ""]
+    pt.add_row(obj_row)
+
+    # Rows with dynamic width for constraints
+    for coeffs, relation, rhs in constraints:
+        formatted_row = ["{:.2f}".format(val) for val in coeffs] + [relation, "{:.2f}".format(rhs)]
+        pt.add_row(formatted_row)
+
+    return str(pt)
+
+
+def get_tableau_str(tableau, show_basic_vars=True, rounding_accuracy=2):
     """
-    Display the tableau with the basis variables.
+    Display the tableau with the basis variables using prettytable.
 
     Parameters:
-    - tableau (numpy array): The current tableau of the LP problem.
+    - tableau (pandas DataFrame): The current tableau of the LP problem.
+    - show_basic_vars (bool): Whether to display basic variable columns.
+    - rounding_accuracy (int): Number of decimal places to round the values in the tableau.
 
     Returns:
     - str: A string representation of the tableau with basis variables.
     """
     # Getting the basis variables (row, col) pairs
     basis_vars = get_basis_variables(tableau)
-
-    # Extracting just the column values to use for naming
     basis_rows = {row: col for row, col in basis_vars}
 
     rows, cols = tableau.shape
-    table_str = ""
 
-    # Determine the width for each column
-    header = ["Basis"] + ["x" + str(i) for i in range(cols - 1)] + ["RHS"]
-    max_lengths = [
-        max(len(header[i]), max(len("{:.2f}".format(row[i - 1])) for row in tableau))
-        for i in range(1, cols + 1)
-    ]
+    # Filter columns based on whether basic variables should be displayed
+    if show_basic_vars:
+        valid_cols = set(tableau.columns)
+    else:
+        valid_cols = set(tableau.columns) - set(col for _, col in basis_vars)
 
-    # Add width for Basis column
-    max_lengths = [max(len(header[0]), 5)] + max_lengths
+    # Create a new pretty table
+    pt = PrettyTable()
 
-    # Header with dynamic width
-    table_str += " | ".join([header[i].rjust(max_lengths[i]) for i in range(cols + 1)]) + "\n"
-    table_str += "-" * (sum(max_lengths) + 3 * cols) + "\n"  # Separator
+    # Set the column names
+    header = ["Basis"] + [col for col in tableau.columns if col in valid_cols]
+    pt.field_names = header
 
-    # Rows with dynamic width (with basis)
-    for i, row in enumerate(tableau):
-        basis_col = [("x" + str(basis_rows[i])).ljust(max_lengths[0])]
-        formatted_row = basis_col + [
-            "{:.2f}".format(val).rjust(max_lengths[j + 1]) for j, val in enumerate(row)
+    # Add rows to the table
+    for i in range(rows):
+        basis_col = basis_rows.get(i, "-")  # Using "-" for non-existent basis
+        formatted_row = [basis_col] + [
+            round(tableau.iloc[i][col], rounding_accuracy)
+            for col in tableau.columns
+            if col in valid_cols
         ]
-        table_str += " | ".join(formatted_row) + "\n"
+        pt.add_row(formatted_row)
 
-    return table_str
+    return str(pt)
 
 
-def display_constraints_with_objective(objective_coeffs, constraints):
-    num_coeffs = len(objective_coeffs)
-    table_str = ""
+def get_solution_str(solution):
+    """
+    Display the solution in the desired format with underscores for non-zero values.
 
-    # Determine the width for each column
-    header = ["Coeff" + str(i + 1) for i in range(num_coeffs)] + [
-        "Relation",
-        "RHS",
-    ]
-    max_lengths = [
-        max(
-            len(header[i]),
-            max(len("{:.2f}".format(constraint[0][i])) for constraint in constraints),
-        )
-        for i in range(num_coeffs)
-    ]
-    # Setting fixed widths for 'Relation' and 'RHS' columns
-    max_lengths += [10, 5]
+    Parameters:
+    - solution (dict): The solution dictionary.
 
-    # Header with dynamic width
-    table_str += (
-        " | ".join([header[i].center(max_lengths[i]) for i in range(num_coeffs + 2)]) + "\n"
-    )
-    table_str += "-" * (sum(max_lengths) + 3 * (num_coeffs + 1)) + "\n"  # Separator
+    Returns:
+    - str: Formatted solution string.
+    """
+    # Extract values based on the keys in the solution dictionary
+    values = [solution[key] for key in sorted(solution.keys())]
 
-    # Adding the objective coefficients row
-    obj_row = [
-        "{:.2f}".format(val).rjust(max_lengths[i]) for i, val in enumerate(objective_coeffs)
-    ] + ["Obj. Func.".center(max_lengths[-2]), "".center(max_lengths[-1])]
-    table_str += " | ".join(obj_row) + "\n"
+    # Format values, adding underscores to non-zero values
+    formatted_values = [f"\033[4m{value}\033[0m" if value != 0 else str(value) for value in values]
 
-    # Rows with dynamic width for constraints
-    for coeffs, relation, rhs in constraints:
-        formatted_row = ["{:.2f}".format(val).rjust(max_lengths[i]) for i, val in enumerate(coeffs)]
-        formatted_row += [
-            relation.center(max_lengths[-2]),
-            "{:.2f}".format(rhs).rjust(max_lengths[-1]),
-        ]
-        table_str += " | ".join(formatted_row) + "\n"
-
-    return table_str
+    return "(" + ", ".join(formatted_values) + ")"
 
 
 # read from file
 in_file = "in.txt"
 objective_type, objective_coeffs, constraints = import_from_file(in_file)
+print(chr(27) + "[2J")
 print("\n*** START ***")
 print(f"Read from file: {in_file}")
 print(f"Objective type: {objective_type.upper()}")
-print(display_constraints_with_objective(objective_coeffs, constraints))
+print(get_constraints_str(objective_coeffs, constraints))
 
 # setup initial tableau
 tableau = setup_initial_tableau(objective_coeffs, constraints)
-print("Initial Tableau:")
-print(display_tableau(tableau))
+print("\nInitial Tableau:")
+print(get_tableau_str(tableau))
 basis_vars = get_basis_variables(tableau)
-basis = ", ".join([f"x{col}" for _, col in basis_vars])
-print(f"Basic variables: {basis}\n")
 
 # simplex algorithm
+print("\n*** START SIMPLEX ***")
 optimality = check_for_optimality(tableau)
 while not optimality:
     entering_variable = choose_entering_variable(tableau)
     departing_variable = choose_departing_variable(tableau, entering_variable)
     tableau = pivot(tableau, entering_variable, departing_variable)
-    print(f"Entering variable: x{entering_variable}")
-    print(f"Departing variable: x{basis[departing_variable]}")
-    print(display_tableau(tableau))
+    print(f"\nEntering variable: {entering_variable}")
+    print(
+        f"Departing variable: {next((col for row, col in basis_vars if row == departing_variable), None)}\n"
+    )
+    print(get_tableau_str(tableau))
     basis_vars = get_basis_variables(tableau)
-    basis = ", ".join([f"x{col}" for _, col in basis_vars])
-    print(f"Basic variables: {basis}\n")
 
     optimality = check_for_optimality(tableau)
 
 print("Solution is optimal.")
 
 solution = extract_solution(tableau)
-print(f"Solution: {solution}")
+print(f"Solution = {get_solution_str(solution)}")
 
 print("\n*** END ***")
