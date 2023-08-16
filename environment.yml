@@ -6,4 +6,6 @@ dependencies:
   - pip=22.2.2
   - flake8
   - black
+  - numpy
   - pandas
+  - prettytable
