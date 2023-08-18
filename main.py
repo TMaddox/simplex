@@ -377,14 +377,14 @@ while not optimality:
     print(
         f"Departing variable: {next((col for row, col in basis_vars if row == departing_variable), None)}\n"
     )
-    print(get_tableau_str(tableau))
+    print(get_tableau_str(tableau, display_basicsolution=True))
     basis_vars = get_basis_variables(tableau)
 
     optimality = check_for_optimality(tableau)
 
-print("Solution is optimal.")
+print("\nSolution is optimal.")
 
 solution = extract_solution(tableau)
-print(f"Solution = {get_solution_str(solution)}")
+print(f"Solution: {get_solution_str(solution)}")
 
 print("\n*** END ***")
