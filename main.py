@@ -12,7 +12,9 @@ def import_from_file(filename):
 
         # Get the coefficients of the objective function
         # Using eval to convert fractions (or any valid expression) into float
-        objective_coeffs = [eval(coeff) for coeff in lines[1].split()]
+        obj_parts = [eval(coeff) for coeff in lines[1].split()]
+        objective_coeffs = obj_parts[:-1]
+        objective_constant = obj_parts[-1]
 
         # Get the constraints
         constraints = []
@@ -30,12 +32,10 @@ def import_from_file(filename):
             rhs = float(parts[-1])
             constraints.append((coeffs, relation, rhs))
 
-    return objective_type, objective_coeffs, constraints
-
-    return objective_type, objective_coeffs, constraints
+    return objective_type, objective_coeffs, objective_constant, constraints
 
 
-def setup_initial_tableau(objective_coeffs, constraints, include_helper=False):
+def setup_initial_tableau(objective_coeffs, objective_constant, constraints, include_helper=False):
     n_vars = len(objective_coeffs)
     n_constraints = len(constraints)
     n_slack = sum(1 for _, relation, _ in constraints if relation != "=")
@@ -45,7 +45,6 @@ def setup_initial_tableau(objective_coeffs, constraints, include_helper=False):
     tableau = pd.DataFrame()
 
     # Add columns for variables
-    #
     for i in range(1, n_vars + 1):
         tableau[f"x{i}"] = [constr[0][i - 1] for constr in constraints]
 
@@ -65,7 +64,7 @@ def setup_initial_tableau(objective_coeffs, constraints, include_helper=False):
     tableau["RHS"] = [constr[2] for constr in constraints]
 
     # Add objective function
-    tableau.loc[-1] = [-coeff for coeff in objective_coeffs] + [0] * n_slack + [0]
+    tableau.loc[-1] = [-coeff for coeff in objective_coeffs] + [0] * n_slack + [objective_constant]
     tableau.index = tableau.index + 1
     tableau.sort_index(inplace=True)
     tableau.insert(0, "x0", [1] + [0] * n_constraints)
@@ -222,36 +221,32 @@ def pivot(tableau, entering_col, departing_row):
     return new_tableau
 
 
-def extract_solution(tableau, rounding_accuracy=2):
+def extract_solution(tableau):
     """
     Extract the solution (values of decision variables) from the final tableau.
 
     Parameters:
     - tableau (pandas DataFrame): The final tableau of the LP problem.
-    - rounding_accuracy (int): Number of decimal places to round the solution values.
 
     Returns:
     - solution (dict): A dictionary where keys are variable names (e.g., "x1") and values are the corresponding values.
     """
     basis_vars = get_basis_variables(tableau)
+    basis_vars_dict = {col: row for row, col in basis_vars}
     solution = {}
 
-    # For each basic variable, fetch its value
-    for row, col_name in basis_vars:
-        solution[col_name] = round(tableau.iloc[row]["RHS"], rounding_accuracy)
-
-    # Add zeros for non-basis variables
+    # For each column in the tableau, fetch its value if it's a basic variable
     for col_name in tableau.columns[:-1]:  # excluding the "RHS" column
-        if col_name not in solution:
+        row_idx = basis_vars_dict.get(col_name)
+        if row_idx is not None:
+            solution[col_name] = tableau.at[row_idx, "RHS"]
+        else:
             solution[col_name] = 0
 
-    # Sort the dictionary based on the variable names
-    sorted_solution = {k: solution[k] for k in sorted(solution)}
-
-    return sorted_solution
+    return solution
 
 
-def get_constraints_str(objective_coeffs, constraints):
+def get_constraints_str(objective_coeffs, objective_constant, constraints):
     num_coeffs = len(objective_coeffs)
 
     # Create a new pretty table
@@ -262,7 +257,10 @@ def get_constraints_str(objective_coeffs, constraints):
     pt.field_names = header
 
     # Adding the objective coefficients row
-    obj_row = ["{:.2f}".format(val) for val in objective_coeffs] + ["Obj. Func.", ""]
+    obj_row = ["{:.2f}".format(val) for val in objective_coeffs] + [
+        "Obj. Func.",
+        "{:.2f}".format(objective_constant),
+    ]
     pt.add_row(obj_row)
 
     # Rows with dynamic width for constraints
@@ -273,7 +271,9 @@ def get_constraints_str(objective_coeffs, constraints):
     return str(pt)
 
 
-def get_tableau_str(tableau, show_basic_vars=True, rounding_accuracy=2):
+def get_tableau_str(
+    tableau, show_basic_vars=True, rounding_accuracy=2, display_basicsolution=False
+):
     """
     Display the tableau with the basis variables using prettytable.
 
@@ -281,6 +281,7 @@ def get_tableau_str(tableau, show_basic_vars=True, rounding_accuracy=2):
     - tableau (pandas DataFrame): The current tableau of the LP problem.
     - show_basic_vars (bool): Whether to display basic variable columns.
     - rounding_accuracy (int): Number of decimal places to round the values in the tableau.
+    - display_basicsolution (bool): Whether to display the basic solution.
 
     Returns:
     - str: A string representation of the tableau with basis variables.
@@ -314,41 +315,55 @@ def get_tableau_str(tableau, show_basic_vars=True, rounding_accuracy=2):
         ]
         pt.add_row(formatted_row)
 
-    return str(pt)
+    tableau_str = str(pt)
+
+    if display_basicsolution:
+        solution_str = get_solution_str(extract_solution(tableau))
+        tableau_str += f"\nBasic solution: {solution_str}"
+
+    return tableau_str
 
 
-def get_solution_str(solution):
+def get_solution_str(solution, show_non_basic_vars=True, rounding_accuracy=2):
     """
     Display the solution in the desired format with underscores for non-zero values.
 
     Parameters:
     - solution (dict): The solution dictionary.
+    - show_non_basic_vars (bool): Whether to display non-basic variables.
+    - rounding_accuracy (int): Number of decimal places to round the solution values.
 
     Returns:
     - str: Formatted solution string.
     """
-    # Extract values based on the keys in the solution dictionary
-    values = [solution[key] for key in sorted(solution.keys())]
+    # Filter out non-basic variables if requested
+    if not show_non_basic_vars:
+        solution = {k: v for k, v in solution.items() if v != 0}
+
+    # Extract and format the keys and values based on the keys in the filtered solution dictionary
+    keys = list(solution.keys())
+    values = [round(solution[key], rounding_accuracy) for key in keys]
 
     # Format values, adding underscores to non-zero values
     formatted_values = [f"\033[4m{value}\033[0m" if value != 0 else str(value) for value in values]
 
-    return "(" + ", ".join(formatted_values) + ")"
+    # Combine variable names and their values for display
+    return f"({' '.join(keys)}) = ({' '.join(formatted_values)})"
 
 
 # read from file
 in_file = "in.txt"
-objective_type, objective_coeffs, constraints = import_from_file(in_file)
+objective_type, objective_coeffs, objective_constant, constraints = import_from_file(in_file)
 print(chr(27) + "[2J")
 print("\n*** START ***")
 print(f"Read from file: {in_file}")
 print(f"Objective type: {objective_type.upper()}")
-print(get_constraints_str(objective_coeffs, constraints))
+print(get_constraints_str(objective_coeffs, objective_constant, constraints))
 
 # setup initial tableau
-tableau = setup_initial_tableau(objective_coeffs, constraints)
+tableau = setup_initial_tableau(objective_coeffs, objective_constant, constraints)
 print("\nInitial Tableau:")
-print(get_tableau_str(tableau))
+print(get_tableau_str(tableau, display_basicsolution=True))
 basis_vars = get_basis_variables(tableau)
 
 # simplex algorithm
