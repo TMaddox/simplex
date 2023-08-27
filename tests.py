@@ -1,34 +1,45 @@
-import numpy as np
-import unittest
 import os
+import numpy as np
+import yaml
+import unittest
 
 from main import *
 
 
-class TestImportFromFile(unittest.TestCase):
+class TestImportFromYAML(unittest.TestCase):
     def setUp(self):
         # Create a sample input file for testing
-        self.filename = "test_input.txt"
+        self.filename = "test_input.yml"
+        data = {
+            "objective_type": "max",
+            "objective": {"coefficients": ["5/2", "0", "-1/3"], "constant": "-4.5"},
+            "constraints": [
+                {"coefficients": ["50", "0", "20"], "relation": "<=", "rhs": "200"},
+                {"coefficients": ["4", "2", "0"], "relation": ">=", "rhs": "30"},
+                {"coefficients": ["-60", "0", "-20"], "relation": "=", "rhs": "480"},
+                {"coefficients": ["0", "0", "0"], "relation": "<=", "rhs": "50"},
+            ],
+            "variable_constraints": {"x1": "unrestricted", "x2": ">=0"},
+        }
         with open(self.filename, "w") as f:
-            f.write("max\n")
-            f.write("5/2 0 -3+1/3 -4.5\n")  # Using fractions and expressions
-            f.write("50 0 20 <= 200\n")
-            f.write("4 2 0 >= 30\n")  # Greater than or equal to inequality
-            f.write("-60 0 -20 = 480\n")  # Negative coefficients and equality
-            f.write("0 0 0 <= 50\n")  # Zero coefficients
+            yaml.dump(data, f)
 
     def tearDown(self):
         # Cleanup: Remove the sample input file after the test
         os.remove(self.filename)
 
-    def test_import_from_file(self):
-        objective_type, objective_coeffs, objective_constant, constraints = import_from_file(
-            self.filename
-        )
+    def test_import_from_yaml(self):
+        (
+            objective_type,
+            objective_coeffs,
+            objective_constant,
+            constraints,
+            variable_constraints,
+        ) = import_from_yaml(self.filename)
 
         # Validate the extracted data
         self.assertEqual(objective_type, "max")
-        self.assertEqual(objective_coeffs, [2.5, 0, -3 + 1 / 3])
+        self.assertEqual(objective_coeffs, [2.5, 0, -1 / 3])
         self.assertEqual(objective_constant, -4.5)
         self.assertEqual(
             constraints,
@@ -39,6 +50,7 @@ class TestImportFromFile(unittest.TestCase):
                 ([0, 0, 0], "<=", 50),
             ],
         )
+        self.assertEqual(variable_constraints, {"x1": "unrestricted", "x2": ">=0"})
 
 
 class TestExtractMatrices(unittest.TestCase):

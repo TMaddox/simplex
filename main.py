@@ -1,62 +1,95 @@
 import numpy as np
 import pandas as pd
+import yaml
+import ast
 from prettytable import PrettyTable
 
 
-def import_from_file(filename):
+def safe_eval(node_or_string):
     """
-    Imports a linear program from a file and extracts its components.
+    Safely evaluate an arithmetic expression using the AST.
+    """
+    if isinstance(node_or_string, str):
+        node = ast.parse(node_or_string, mode="eval").body
+    else:
+        node = node_or_string
 
-    The expected format of the file is:
-    - First line: Objective type ("max" or "min").
-    - Second line: Coefficients of the objective function variables, space-separated,
-      with the last coefficient being the constant term of the objective function.
-    - Subsequent lines: Coefficients of the constraint variables, space-separated,
-      followed by the relation ("<=", ">=", "=") and the right-hand side value of the constraint.
+    if isinstance(node, ast.Expression):
+        return safe_eval(node.body)
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+        left = safe_eval(node.left)
+        right = safe_eval(node.right)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        elif isinstance(node.op, ast.Sub):
+            return left - right
+        elif isinstance(node.op, ast.Mult):
+            return left * right
+        elif isinstance(node.op, ast.Div):
+            return left / right
+    elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):  # Handle negative numbers
+        operand = safe_eval(node.operand)
+        return -operand
+    elif isinstance(node, ast.Num):
+        return node.n
+    else:
+        raise ValueError("Unsupported operation. Only basic arithmetic operations are allowed.")
+
+
+def to_float(x):
+    """
+    Converts a given input to a float or a list of floats.
 
     Parameters:
-    - filename (str): Path to the file containing the linear program definition.
+    - x (int, float, str, or list): The input to be converted.
 
     Returns:
-    - objective_type (str): The objective type of the LP, either "max" or "min".
-    - objective_coeffs (list of float): Coefficients of the objective function variables.
-    - objective_constant (float): Constant term from the objective function.
-    - constraints (list of tuple): List of constraints, where each constraint is a tuple of
-      coefficients, relation, and right-hand side value.
+    - float or list: The converted input. If the input is a list, each item in the list is converted.
 
     Raises:
-    - AssertionError: If the number of coefficients in any constraint doesn't match
-      the number of objective function coefficients, or if an invalid relation is encountered.
+    - ValueError: If a string input cannot be converted to a float.
+    - TypeError: If an unsupported type is provided.
     """
-    with open(filename, "r") as f:
-        lines = f.readlines()
+    if isinstance(x, int):
+        return float(x)
+    elif isinstance(x, float):
+        return x
+    elif isinstance(x, str):
+        try:
+            return safe_eval(ast.parse(x, mode="eval"))
+        except (ValueError, SyntaxError):
+            raise ValueError(f"The string '{x}' cannot be converted to float.")
+    elif isinstance(x, list):
+        return [to_float(item) for item in x]
+    else:
+        raise TypeError(f"Unsupported type {type(x)} for conversion to float.")
 
-        # Get the objective type
-        objective_type = lines[0].strip().lower()
 
-        # Get the coefficients of the objective function
-        # Using eval to convert fractions (or any valid expression) into float
-        obj_parts = [eval(coeff) for coeff in lines[1].split()]
-        objective_coeffs = obj_parts[:-1]
-        objective_constant = obj_parts[-1]
+def import_from_yaml(filename):
+    """
+    Imports data from a YAML file to construct the LP problem.
 
-        # Get the constraints
-        constraints = []
-        for line in lines[2:]:
-            parts = line.split()
+    Parameters:
+    - filename (str): The path to the YAML file.
 
-            # Ensure that the number of coefficients in each constraint matches the number of objective coefficients
-            assert len(parts[:-2]) == len(
-                objective_coeffs
-            ), "Mismatch in number of coefficients in constraints and objective function."
+    Returns:
+    - tuple: Contains objective type, objective coefficients, objective constant,
+             constraints, and variable constraints.
+    """
+    with open(filename, "r") as file:
+        data = yaml.safe_load(file)
 
-            coeffs = [eval(coeff) for coeff in parts[:-2]]
-            relation = parts[-2]
-            assert relation in ["<=", ">=", "="], f"Invalid relation: {relation} in constraints."
-            rhs = float(parts[-1])
-            constraints.append((coeffs, relation, rhs))
+    objective_type = data["objective_type"]
+    objective_coeffs = to_float(data["objective"]["coefficients"])
+    objective_constant = to_float(data["objective"]["constant"])
 
-    return objective_type, objective_coeffs, objective_constant, constraints
+    constraints = [
+        (to_float(constraint["coefficients"]), constraint["relation"], to_float(constraint["rhs"]))
+        for constraint in data["constraints"]
+    ]
+    variable_constraints = data.get("variable_constraints", {})
+
+    return objective_type, objective_coeffs, objective_constant, constraints, variable_constraints
 
 
 def extract_matrices(objective_type, objective_coeffs, objective_constant, constraints):
@@ -464,8 +497,14 @@ def get_solution_str(solution, show_non_basic_vars=True, rounding_accuracy=2):
 
 if __name__ == "__main__":
     # read from file
-    in_file = "in.txt"
-    objective_type, objective_coeffs, objective_constant, constraints = import_from_file(in_file)
+    in_file = "in.yaml"
+    (
+        objective_type,
+        objective_coeffs,
+        objective_constant,
+        constraints,
+        variable_constraints,
+    ) = import_from_yaml(in_file)
     inequalities = [inequality for _, inequality, _ in constraints]
     print(chr(27) + "[2J")
     print("\n*** START ***")
