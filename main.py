@@ -49,7 +49,7 @@ def extract_matrices(objective_type, objective_coeffs, objective_constant, const
     Returns:
     - A (numpy array): The constraint matrix.
     - b (numpy array): The right-hand side vector of the constraints.
-    - b_0 (numpy array): The constant term from the objective function.
+    - b0 (float): The constant term from the objective function.
     - c (numpy array): Coefficients of the objective function variables.
     - relations (list of str): List of relations corresponding to each
     constraint (e.g., "<=", ">=", "=").
@@ -57,20 +57,34 @@ def extract_matrices(objective_type, objective_coeffs, objective_constant, const
     """
     A = np.array([constr[0] for constr in constraints])
     b = np.array([constr[2] for constr in constraints])
-    b_0 = np.array([objective_constant])
+    b0 = objective_constant
     c = np.array(objective_coeffs)
     relations = [constr[1] for constr in constraints]
 
-    return A, b, b_0, c, relations, objective_type
+    return A, b, b0, c, relations, objective_type
 
 
-def setup_initial_tableau(
-    objective_type, objective_coeffs, objective_constant, constraints, include_helper=False
-):
-    A, b, b_0, c, relations, objective_type = extract_matrices(
-        objective_type, objective_coeffs, objective_constant, constraints
-    )
+def get_dual(A, b, b0, c, relations, primal_objective_type):
+    A_dual = A.T
+    b_dual = c
+    c_dual = b
 
+    relations_dual = []
+    for relation in relations:  # TODO - check if this is correct / does not match the book P. 79
+        if relation == "<=":
+            relations_dual.append(">=")
+        elif relation == ">=":
+            relations_dual.append("<=")
+        elif relation == "=":
+            relations_dual.append("=")
+
+    # If primal is maximization, dual will be minimization and vice-versa.
+    dual_objective_type = "min" if primal_objective_type == "max" else "max"
+
+    return A_dual, b_dual, -b0, c_dual, relations_dual, dual_objective_type
+
+
+def create_tableau(A, b, b0, c, relations, include_helper=False):
     n_vars = A.shape[1]
     n_constraints = A.shape[0]
     n_slack = sum(1 for relation in relations if relation != "=")
@@ -98,7 +112,7 @@ def setup_initial_tableau(
     tableau["RHS"] = b
 
     # Add objective function
-    tableau.loc[-1] = [-coeff for coeff in c] + [0] * n_slack + [b_0[0]]
+    tableau.loc[-1] = [-coeff for coeff in c] + [0] * n_slack + [b0]
     tableau.index = tableau.index + 1
     tableau.sort_index(inplace=True)
     tableau.insert(0, "x0", [1] + [0] * n_constraints)
@@ -140,6 +154,28 @@ def setup_initial_tableau(
         tableau.sort_index(inplace=True)
 
     return tableau
+
+
+def setup_initial_tableau(
+    objective_type, objective_coeffs, objective_constant, constraints, include_helper=False
+):
+    # Extract matrices and vectors from the LP problem
+    A, b, b0, c, relations, objective_type = extract_matrices(
+        objective_type, objective_coeffs, objective_constant, constraints
+    )
+
+    # Create the primal tableau
+    tableau = create_tableau(A, b, b0, c, relations, include_helper=include_helper)
+
+    # Get the dual problem
+    A_d, b_d, b0_d, c_d, relations_d, objective_type_d = get_dual(
+        A, b, b0, c, relations, objective_type
+    )
+
+    # Create the dual tableau
+    tableau_d = create_tableau(A_d, b_d, b0_d, c_d, relations_d, include_helper=include_helper)
+
+    return tableau, tableau_d
 
 
 def check_for_optimality(tableau):
