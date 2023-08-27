@@ -4,6 +4,30 @@ from prettytable import PrettyTable
 
 
 def import_from_file(filename):
+    """
+    Imports a linear program from a file and extracts its components.
+
+    The expected format of the file is:
+    - First line: Objective type ("max" or "min").
+    - Second line: Coefficients of the objective function variables, space-separated,
+      with the last coefficient being the constant term of the objective function.
+    - Subsequent lines: Coefficients of the constraint variables, space-separated,
+      followed by the relation ("<=", ">=", "=") and the right-hand side value of the constraint.
+
+    Parameters:
+    - filename (str): Path to the file containing the linear program definition.
+
+    Returns:
+    - objective_type (str): The objective type of the LP, either "max" or "min".
+    - objective_coeffs (list of float): Coefficients of the objective function variables.
+    - objective_constant (float): Constant term from the objective function.
+    - constraints (list of tuple): List of constraints, where each constraint is a tuple of
+      coefficients, relation, and right-hand side value.
+
+    Raises:
+    - AssertionError: If the number of coefficients in any constraint doesn't match
+      the number of objective function coefficients, or if an invalid relation is encountered.
+    """
     with open(filename, "r") as f:
         lines = f.readlines()
 
@@ -65,18 +89,36 @@ def extract_matrices(objective_type, objective_coeffs, objective_constant, const
 
 
 def get_dual(A, b, b0, c, relations, primal_objective_type):
+    """
+    Compute the dual linear program for a given primal linear program.
+
+    Parameters:
+    - A (numpy array): Constraint matrix of the primal problem.
+    - b (numpy array): Right-hand side vector of the primal constraints.
+    - b0 (float): Constant term from the primal objective function.
+    - c (numpy array): Coefficients of the primal objective function variables.
+    - relations (list of str): List of relations corresponding to each primal constraint (e.g., "<=", "=").
+    - primal_objective_type (str): The objective type of the primal LP, either "max" or "min".
+
+    Returns:
+    - A_dual (numpy array): Constraint matrix of the dual problem.
+    - b_dual (numpy array): Right-hand side vector of the dual constraints.
+    - c_dual (numpy array): Coefficients of the dual objective function variables.
+    - relations_dual (list of str): List of relations corresponding to each dual constraint.
+    - dual_objective_type (str): The objective type of the dual LP, either "max" or "min".
+    """
     A_dual = A.T
     b_dual = c
     c_dual = b
 
     relations_dual = []
-    for relation in relations:  # TODO - check if this is correct / does not match the book P. 79
+    for relation in relations:
         if relation == "<=":
             relations_dual.append(">=")
         elif relation == ">=":
             relations_dual.append("<=")
         elif relation == "=":
-            relations_dual.append("=")
+            relations_dual.append(">=")  # Using ">=" to indicate unrestricted "u"
 
     # If primal is maximization, dual will be minimization and vice-versa.
     dual_objective_type = "min" if primal_objective_type == "max" else "max"
@@ -420,41 +462,44 @@ def get_solution_str(solution, show_non_basic_vars=True, rounding_accuracy=2):
     return f"({' '.join(keys)}) = ({' '.join(formatted_values)})"
 
 
-# read from file
-in_file = "in.txt"
-objective_type, objective_coeffs, objective_constant, constraints = import_from_file(in_file)
-inequalities = [inequality for _, inequality, _ in constraints]
-print(chr(27) + "[2J")
-print("\n*** START ***")
-print(f"Read from file: {in_file}")
-print(f"Objective type: {objective_type.upper()}")
-print(get_constraints_str(objective_coeffs, objective_constant, constraints))
+if __name__ == "__main__":
+    # read from file
+    in_file = "in.txt"
+    objective_type, objective_coeffs, objective_constant, constraints = import_from_file(in_file)
+    inequalities = [inequality for _, inequality, _ in constraints]
+    print(chr(27) + "[2J")
+    print("\n*** START ***")
+    print(f"Read from file: {in_file}")
+    print(f"Objective type: {objective_type.upper()}")
+    print(get_constraints_str(objective_coeffs, objective_constant, constraints))
 
-# setup initial tableau
-tableau = setup_initial_tableau(objective_type, objective_coeffs, objective_constant, constraints)
-print("\nInitial Tableau:")
-print(get_tableau_str(tableau, display_basicsolution=True))
-basis_vars = get_basis_variables(tableau)
-
-# simplex algorithm
-print("\n*** START SIMPLEX ***")
-optimality = check_for_optimality(tableau)
-while not optimality:
-    entering_variable = choose_entering_variable(tableau)
-    departing_variable = choose_departing_variable(tableau, entering_variable)
-    tableau = pivot(tableau, entering_variable, departing_variable)
-    print(f"\nEntering variable: {entering_variable}")
-    print(
-        f"Departing variable: {next((col for row, col in basis_vars if row == departing_variable), None)}\n"
+    # setup initial tableau
+    tableau, tableau_d = setup_initial_tableau(
+        objective_type, objective_coeffs, objective_constant, constraints
     )
+    print("\nInitial Tableau:")
     print(get_tableau_str(tableau, display_basicsolution=True))
     basis_vars = get_basis_variables(tableau)
 
+    # simplex algorithm
+    print("\n*** START SIMPLEX ***")
     optimality = check_for_optimality(tableau)
+    while not optimality:
+        entering_variable = choose_entering_variable(tableau)
+        departing_variable = choose_departing_variable(tableau, entering_variable)
+        tableau = pivot(tableau, entering_variable, departing_variable)
+        print(f"\nEntering variable: {entering_variable}")
+        print(
+            f"Departing variable: {next((col for row, col in basis_vars if row == departing_variable), None)}\n"
+        )
+        print(get_tableau_str(tableau, display_basicsolution=True))
+        basis_vars = get_basis_variables(tableau)
 
-print("\nSolution is optimal.")
+        optimality = check_for_optimality(tableau)
 
-solution = extract_solution(tableau)
-print(f"Solution: {get_solution_str(solution)}")
+    print("\nSolution is optimal.")
 
-print("\n*** END ***")
+    solution = extract_solution(tableau)
+    print(f"Solution: {get_solution_str(solution)}")
+
+    print("\n*** END ***")
