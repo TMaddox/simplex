@@ -35,23 +35,57 @@ def import_from_file(filename):
     return objective_type, objective_coeffs, objective_constant, constraints
 
 
-def setup_initial_tableau(objective_coeffs, objective_constant, constraints, include_helper=False):
-    n_vars = len(objective_coeffs)
-    n_constraints = len(constraints)
-    n_slack = sum(1 for _, relation, _ in constraints if relation != "=")
-    n_helper = sum(1 for _, relation, _ in constraints if relation == "=" or relation == ">=")
+def extract_matrices(objective_type, objective_coeffs, objective_constant, constraints):
+    """
+    Extract the matrices and vectors representing a linear program from its components.
+
+    Parameters:
+    - objective_type (str): The objective type of the LP, either "max" or "min".
+    - objective_coeffs (list of float): Coefficients of the objective function variables.
+    - objective_constant (float): Constant term from the objective function.
+    - constraints (list of tuple): List of constraints, where each constraint is a tuple of
+    coefficients, relation, and right-hand side value.
+
+    Returns:
+    - A (numpy array): The constraint matrix.
+    - b (numpy array): The right-hand side vector of the constraints.
+    - b_0 (numpy array): The constant term from the objective function.
+    - c (numpy array): Coefficients of the objective function variables.
+    - relations (list of str): List of relations corresponding to each
+    constraint (e.g., "<=", ">=", "=").
+    - objective_type (str): The objective type of the LP, either "max" or "min".
+    """
+    A = np.array([constr[0] for constr in constraints])
+    b = np.array([constr[2] for constr in constraints])
+    b_0 = np.array([objective_constant])
+    c = np.array(objective_coeffs)
+    relations = [constr[1] for constr in constraints]
+
+    return A, b, b_0, c, relations, objective_type
+
+
+def setup_initial_tableau(
+    objective_type, objective_coeffs, objective_constant, constraints, include_helper=False
+):
+    A, b, b_0, c, relations, objective_type = extract_matrices(
+        objective_type, objective_coeffs, objective_constant, constraints
+    )
+
+    n_vars = A.shape[1]
+    n_constraints = A.shape[0]
+    n_slack = sum(1 for relation in relations if relation != "=")
+    n_helper = sum(1 for relation in relations if relation == "=" or relation == ">=")
 
     # Initialize an empty DataFrame
     tableau = pd.DataFrame()
 
     # Add columns for variables
     for i in range(1, n_vars + 1):
-        tableau[f"x{i}"] = [constr[0][i - 1] for constr in constraints]
+        tableau[f"x{i}"] = A[:, i - 1]
 
     # Add columns for slack variables
     i_slack = 1
-    for idx in range(n_constraints):
-        relation = constraints[idx][1]
+    for idx, relation in enumerate(relations):
         if relation == "<=":
             tableau[f"s{i_slack}"] = [1 if j == idx else 0 for j in range(n_constraints)]
             i_slack += 1
@@ -61,10 +95,10 @@ def setup_initial_tableau(objective_coeffs, objective_constant, constraints, inc
         # no slack variable for equality constraints
 
     # Add RHS column
-    tableau["RHS"] = [constr[2] for constr in constraints]
+    tableau["RHS"] = b
 
     # Add objective function
-    tableau.loc[-1] = [-coeff for coeff in objective_coeffs] + [0] * n_slack + [objective_constant]
+    tableau.loc[-1] = [-coeff for coeff in c] + [0] * n_slack + [b_0[0]]
     tableau.index = tableau.index + 1
     tableau.sort_index(inplace=True)
     tableau.insert(0, "x0", [1] + [0] * n_constraints)
@@ -72,8 +106,7 @@ def setup_initial_tableau(objective_coeffs, objective_constant, constraints, inc
     if include_helper:
         # Add columns for helper variables
         i_helper = 1
-        for idx in range(n_constraints):
-            relation = constraints[idx][1]
+        for idx, relation in enumerate(relations):
             if relation == "=":
                 tableau.insert(
                     tableau.shape[1] - 1,
@@ -354,6 +387,7 @@ def get_solution_str(solution, show_non_basic_vars=True, rounding_accuracy=2):
 # read from file
 in_file = "in.txt"
 objective_type, objective_coeffs, objective_constant, constraints = import_from_file(in_file)
+inequalities = [inequality for _, inequality, _ in constraints]
 print(chr(27) + "[2J")
 print("\n*** START ***")
 print(f"Read from file: {in_file}")
@@ -361,7 +395,7 @@ print(f"Objective type: {objective_type.upper()}")
 print(get_constraints_str(objective_coeffs, objective_constant, constraints))
 
 # setup initial tableau
-tableau = setup_initial_tableau(objective_coeffs, objective_constant, constraints)
+tableau = setup_initial_tableau(objective_type, objective_coeffs, objective_constant, constraints)
 print("\nInitial Tableau:")
 print(get_tableau_str(tableau, display_basicsolution=True))
 basis_vars = get_basis_variables(tableau)
