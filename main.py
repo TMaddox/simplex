@@ -17,6 +17,7 @@ class LinearOptimizationProblem:
 
         self.tableaus = []  # Initialize an empty list to store the tableaus
         self.initialized = False
+        self.phase = None
 
     @classmethod
     def create_from_yaml(cls, filename):
@@ -104,9 +105,7 @@ class LinearOptimizationProblem:
         # Combine variable names and their values for display
         return f"({' '.join(keys)}) = ({' '.join(formatted_values)})"
 
-    def create_tableau(
-        self, include_helper=False
-    ):  # TODO function to figure out if helpers are needed
+    def create_tableau(self, include_helper):
         n_vars = self.A.shape[1]
         n_constraints = self.A.shape[0]
         n_slack = sum(1 for relation in self.relations if relation != "=")
@@ -134,50 +133,70 @@ class LinearOptimizationProblem:
         tableau["RHS"] = self.b
 
         # Add objective function
-        tableau.loc[-1] = [-coeff for coeff in self.c] + [0] * n_slack + [self.b0]
+        tableau.loc[-1] = (
+            [coeff * (-1 if self.objective_type == "max" else 1) for coeff in self.c]
+            + [0] * n_slack
+            + [self.b0]
+        )
         tableau.index = tableau.index + 1
         tableau.sort_index(inplace=True)
         tableau.insert(0, "x0", [1] + [0] * n_constraints)
 
         if include_helper:
-            # Add columns for helper variables
-            i_helper = 1
-            for idx, relation in enumerate(self.relations):
-                if relation == "=":
-                    tableau.insert(
-                        tableau.shape[1] - 1,
-                        f"h{i_helper}",
-                        [0] + [1 if j == idx else 0 for j in range(n_constraints)],
-                    )
-                    i_helper += 1
-                elif relation == ">=":
-                    tableau.insert(
-                        tableau.shape[1] - 1,
-                        f"h{i_helper}",
-                        [0] + [1 if j == idx else 0 for j in range(n_constraints)],
-                    )
-                    i_helper += 1
-                # no helper variable for <= constraints
-
-            tableau.insert(0, "x-1", [0] + [0] * n_constraints)
-
-            # Add row for helper objective function
-            helper_obj_row = pd.Series(
-                [0] * tableau.shape[1], dtype="float64", index=tableau.columns
-            )
-            for hdx in range(1, n_helper + 1):
-                for row in range(1, n_constraints + 1):
-                    if tableau[f"h{hdx}"][row] == 1:
-                        helper_obj_row -= tableau.iloc[row]
-
-            helper_obj_row["x-1"] = 1
-            for hdx in range(1, n_helper + 1):
-                helper_obj_row[f"h{hdx}"] = 0
-            tableau.loc[-1] = helper_obj_row
-            tableau.index = tableau.index + 1
-            tableau.sort_index(inplace=True)
+            tableau = self.add_helper(tableau, self.A, self.relations)
 
         self.tableaus.append(tableau)  # Append the tableau to the list of tableaus
+
+    @staticmethod
+    def add_helper(tableau, A, relations):
+        n_constraints = A.shape[0]
+        n_helper = sum(1 for relation in relations if relation == "=" or relation == ">=")
+
+        i_helper = 1
+        for idx, relation in enumerate(relations):
+            if relation == "=":
+                tableau.insert(
+                    tableau.shape[1] - 1,
+                    f"h{i_helper}",
+                    [0] + [1 if j == idx else 0 for j in range(n_constraints)],
+                )
+                i_helper += 1
+            elif relation == ">=":
+                tableau.insert(
+                    tableau.shape[1] - 1,
+                    f"h{i_helper}",
+                    [0] + [1 if j == idx else 0 for j in range(n_constraints)],
+                )
+                i_helper += 1
+            # no helper variable for <= constraints
+
+        tableau.insert(0, "x-1", [0] + [0] * n_constraints)
+
+        # Add row for helper objective function
+        helper_obj_row = pd.Series([0] * tableau.shape[1], dtype="float64", index=tableau.columns)
+        for hdx in range(1, n_helper + 1):
+            for row in range(1, n_constraints + 1):
+                if tableau[f"h{hdx}"][row] == 1:
+                    helper_obj_row -= tableau.iloc[row]
+
+        helper_obj_row["x-1"] = 1
+        for hdx in range(1, n_helper + 1):
+            helper_obj_row[f"h{hdx}"] = 0
+        tableau.loc[-1] = helper_obj_row
+        tableau.index = tableau.index + 1
+        tableau.sort_index(inplace=True)
+
+        return tableau
+
+    @staticmethod
+    def remove_helpers(tableau):
+        # Remove helper variables
+        tableau = tableau.drop([col for col in tableau.columns if col.startswith("h")], axis=1)
+        tableau = tableau.drop("x-1", axis=1)
+        tableau = tableau.drop(0, axis=0)
+        tableau = tableau.reset_index(drop=True)
+
+        return tableau
 
     def check_for_optimality(self):
         """
@@ -203,6 +222,8 @@ class LinearOptimizationProblem:
 
         # choose departing variable
         positive_rows = old_tableau[idx_entering] > 0
+        if self.phase == 1:
+            positive_rows[1] = False  # Exclude the objective function row in phase 1
         positive_ratios = (
             old_tableau.loc[positive_rows, "RHS"] / old_tableau.loc[positive_rows, idx_entering]
         )
@@ -280,7 +301,10 @@ class LinearOptimizationProblem:
 
     def initialize(self):
         if not self.initialized:
-            self.create_tableau()  # Create the initial tableau
+            needs_helpers = any(relation in ["=", ">="] for relation in self.relations)
+            self.phase = 1 if needs_helpers else 2
+
+            self.create_tableau(needs_helpers)  # Create the initial tableau
             self.initialized = True
 
     def solve(self):
@@ -288,6 +312,13 @@ class LinearOptimizationProblem:
         while not optimality:
             self.pivot()
             optimality = self.check_for_optimality()
+            if self.phase == 1 and optimality:
+                if abs(self.tableaus[-1].iloc[0, -1]) > 1e-8:
+                    raise Exception("Problem not solvable")
+                else:
+                    self.phase = 2
+                    self.tableaus.append(self.remove_helpers(self.tableaus[-1]))
+                    optimality = self.check_for_optimality()
 
     def get_constraints_str(self):
         """
@@ -368,9 +399,10 @@ class LinearOptimizationProblem:
         tableau_str = str(pt)
 
         if display_basicsolution:
-            solution_str = self.get_solution_str(
-                LinearOptimizationProblem.extract_solution(self.tableaus[idx])
-            )
+            solution = LinearOptimizationProblem.extract_solution(self.tableaus[idx])
+            if self.phase == 2 and self.objective_type == "min":
+                solution["x0"] = -solution["x0"]
+            solution_str = self.get_solution_str(solution)
             tableau_str += f"\nBasic solution: {solution_str}"
 
         return tableau_str
@@ -401,6 +433,7 @@ if __name__ == "__main__":
     in_file = "in.yaml"
     print(f"Read from file: {in_file}")
     LOP = LinearOptimizationProblem.create_from_yaml(in_file)
+    LOP.initialize()
 
     print("Constraints:")
     print(LOP.get_constraints_str())
@@ -410,7 +443,15 @@ if __name__ == "__main__":
     # print(LOP.get_tableau_str_all(display_basicsolution=True))
 
     LOP_dual = LOP.get_dual()
+    LOP_dual.initialize()
     print("\nDual problem:")
     print(LOP_dual.get_constraints_str())
 
+    # simple solve dual
+    LOP_dual.solve()
+    print(LOP_dual.get_tableau_str_all(display_basicsolution=True))
+
     print("\n*** END ***")
+
+
+# TODO implement Satz 5.3 c.T x = b_d.T u
