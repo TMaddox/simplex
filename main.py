@@ -19,6 +19,8 @@ class LinearOptimizationProblem:
         self.initialized = False
         self.phase = None
 
+        self.x = None
+
     @classmethod
     def create_from_yaml(cls, filename):
         with open(filename, "r") as file:
@@ -71,19 +73,21 @@ class LinearOptimizationProblem:
 
         return basis
 
-    @staticmethod
-    def extract_solution(tableau):
-        basis_vars = LinearOptimizationProblem.get_basis_variables(tableau)
+    def extract_solution(self, idx=-1):
+        basis_vars = LinearOptimizationProblem.get_basis_variables(self.tableaus[idx])
         basis_vars_dict = {col: row for row, col in basis_vars}
         solution = {}
 
         # For each column in the tableau, fetch its value if it's a basic variable
-        for col_name in tableau.columns[:-1]:  # excluding the "RHS" column
+        for col_name in self.tableaus[idx].columns[:-1]:  # excluding the "RHS" column
             row_idx = basis_vars_dict.get(col_name)
             if row_idx is not None:
-                solution[col_name] = tableau.at[row_idx, "RHS"]
+                solution[col_name] = self.tableaus[idx].at[row_idx, "RHS"]
             else:
                 solution[col_name] = 0
+
+        if self.objective_type == "min":  # negate x0 for minimization problems
+            solution["x0"] = -solution["x0"]
 
         return solution
 
@@ -308,17 +312,29 @@ class LinearOptimizationProblem:
             self.initialized = True
 
     def solve(self):
-        optimality = self.check_for_optimality()
-        while not optimality:
+        if not self.initialized:
+            raise Exception("Problem not initialized")
+
+        if self.phase == 1:
+            optimality_phase1 = self.check_for_optimality()
+
+            while not optimality_phase1:
+                self.pivot()
+                optimality_phase1 = self.check_for_optimality()
+
+                if optimality_phase1:
+                    if abs(self.tableaus[-1].iloc[0, -1]) > 1e-8:
+                        raise Exception("Problem not solvable")
+                    else:
+                        self.phase = 2
+                        self.tableaus.append(self.remove_helpers(self.tableaus[-1]))
+
+        optimality_phase2 = self.check_for_optimality()
+        while not optimality_phase2:
             self.pivot()
-            optimality = self.check_for_optimality()
-            if self.phase == 1 and optimality:
-                if abs(self.tableaus[-1].iloc[0, -1]) > 1e-8:
-                    raise Exception("Problem not solvable")
-                else:
-                    self.phase = 2
-                    self.tableaus.append(self.remove_helpers(self.tableaus[-1]))
-                    optimality = self.check_for_optimality()
+            optimality_phase2 = self.check_for_optimality()
+
+        self.x = self.extract_solution()
 
     def get_constraints_str(self):
         """
@@ -399,10 +415,8 @@ class LinearOptimizationProblem:
         tableau_str = str(pt)
 
         if display_basicsolution:
-            solution = LinearOptimizationProblem.extract_solution(self.tableaus[idx])
-            if self.phase == 2 and self.objective_type == "min":
-                solution["x0"] = -solution["x0"]
-            solution_str = self.get_solution_str(solution)
+            solution = LinearOptimizationProblem.extract_solution(idx)
+            solution_str = self.get_solution_str(solution, rounding_accuracy=rounding_accuracy)
             tableau_str += f"\nBasic solution: {solution_str}"
 
         return tableau_str
@@ -449,7 +463,7 @@ if __name__ == "__main__":
 
     # simple solve dual
     LOP_dual.solve()
-    print(LOP_dual.get_tableau_str_all(display_basicsolution=True))
+    print(LOP_dual.get_tableau_str_all(display_basicsolution=True, rounding_accuracy=4))
 
     print("\n*** END ***")
 

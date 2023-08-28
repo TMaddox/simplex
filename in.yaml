@@ -1,18 +1,14 @@
 objective_type: "max"
 objective:
-  coefficients: [5, 2, 3]
-  constant: -4
+  coefficients: [1, 1]
+  constant: 0
 constraints:
-  - coefficients: [50, 0, 20]
+  - coefficients: [-1, 2]
     relation: "<="
-    rhs: 200
-  - coefficients: [4, 2, 0]
+    rhs: 4
+  - coefficients: [3, 2]
     relation: "<="
-    rhs: 30
-  - coefficients: [60, 40, 20]
-    relation: "<="
-    rhs: 480
+    rhs: 12
 variable_constraints:
   x1: ">=0"
-  x2: "R"
-  x3: ">=0"
+  x2: ">=0"

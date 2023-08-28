@@ -43,7 +43,14 @@ class TestImportFromYAML(unittest.TestCase):
         self.assertEqual(LOP.variable_constraints, {"x1": "R", "x2": ">=0"})
 
 
-class TestGetDual(unittest.TestCase):
+class LinearOptimizationProblemTests(unittest.TestCase):
+    def assertDictAlmostEqual(self, d1, d2, places=7):
+        """Assert that two dictionaries are almost equal."""
+        self.assertEqual(d1.keys(), d2.keys())
+        for k, v1 in d1.items():
+            v2 = d2[k]
+            self.assertAlmostEqual(v1, v2, places=places)
+
     def test_exercise5_1_i(self):
         primal_objective_type = "max"
         c = np.array([5, 2, -1])
@@ -137,8 +144,6 @@ class TestGetDual(unittest.TestCase):
         np.testing.assert_array_equal(LOP_dual.b, b_dual_expected)
         self.assertEqual(LOP_dual.variable_constraints, variable_constraints_dual_expected)
 
-
-class TestSolve(unittest.TestCase):
     def test_exercise5_5(self):
         # define primal problem
         primal_objective_type = "max"
@@ -182,8 +187,14 @@ class TestSolve(unittest.TestCase):
         LOP_dual.solve()
 
         # define expected results
-        x_primal_expected = np.array([2, 3])
-        x_dual_expected = np.array([1 / 8, 3 / 8])
+        x_primal_expected = {"x0": 5, "x1": 2, "x2": 3}
+        x_dual_expected = {"x0": 5, "x1": 1 / 8, "x2": 3 / 8}
+
+        # validate results
+        x_primal = {k: v for k, v in LOP_primal.x.items() if k.startswith("x")}
+        x_dual = {k: v for k, v in LOP_dual.x.items() if k.startswith("x")}
+        self.assertDictAlmostEqual(x_primal, x_primal_expected)
+        self.assertDictAlmostEqual(x_dual, x_dual_expected)
 
 
 if __name__ == "__main__":
