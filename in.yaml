@@ -1,14 +1,16 @@
-objective_type: "max"
+objective_type: "min"
 objective:
-  coefficients: [1, 1]
+  coefficients: [2, 7, 6, 5]
   constant: 0
 constraints:
-  - coefficients: [-1, 2]
-    relation: "<="
+  - coefficients: [-2, -1, 1, 0]
+    relation: ">="
+    rhs: 1
+  - coefficients: [1, 2, 0, 1]
+    relation: ">="
     rhs: 4
-  - coefficients: [3, 2]
-    relation: "<="
-    rhs: 12
 variable_constraints:
   x1: ">=0"
   x2: ">=0"
+  x3: ">=0"
+  x4: ">=0"

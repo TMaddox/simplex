@@ -215,23 +215,26 @@ class LinearOptimizationProblem:
         # The solution is optimal if all coefficients in the first row (objective function row) are non-negative
         return self.tableaus[-1].iloc[0, :-1].ge(0).all()
 
-    def pivot(self):
+    def check_for_feasibility(self):
+        """
+        Check if the current tableau represents a feasible solution.
+
+        Returns:
+        - bool: True if the solution is feasible, False otherwise.
+        """
+        # The solution is feasible if all values in the RHS column are non-negative
+        if self.phase == 1:
+            raise Exception("Phase 1 not implemented")
+        elif self.phase == 2:
+            feasible = self.tableaus[-1].loc[1:, "RHS"].ge(0).all()
+
+        return feasible
+
+    def pivot(self, method="primal"):
         old_tableau = self.tableaus[-1]
 
-        # choose entering variable
-        obj_row = old_tableau.iloc[0, :-1]  # Exclude the RHS value
-        if obj_row.min() >= 0:
-            return None  # If all coefficients are non-negative, the solution is optimal
-        idx_entering = obj_row.idxmin()  # Return the column name of the most negative coefficient
-
-        # choose departing variable
-        positive_rows = old_tableau[idx_entering] > 0
-        if self.phase == 1:
-            positive_rows[1] = False  # Exclude the objective function row in phase 1
-        positive_ratios = (
-            old_tableau.loc[positive_rows, "RHS"] / old_tableau.loc[positive_rows, idx_entering]
-        )
-        idx_departing = positive_ratios.idxmin()
+        # Get the indices of the entering and departing variables
+        idx_entering, idx_departing = self.get_pivot_element_idx(old_tableau, method, self.phase)
 
         # Create a copy of the tableau to avoid modifying the original tableau
         new_tableau = self.tableaus[-1].copy()
@@ -248,6 +251,40 @@ class LinearOptimizationProblem:
                 new_tableau.loc[i] -= factor * new_tableau.loc[idx_departing]
 
         self.tableaus.append(new_tableau)  # Append the tableau to the list of tableaus
+
+    @staticmethod
+    def get_pivot_element_idx(tableau, method, phase):
+        if method == "primal":
+            # choose entering variable
+            obj_row = tableau.iloc[0, :-1]  # Exclude the RHS value
+            if obj_row.min() >= 0:
+                return None  # If all coefficients are non-negative, the solution is optimal
+            idx_entering = obj_row.idxmin()  # Return the column name of most negative coefficient
+
+            # choose departing variable
+            positive_rows = tableau[idx_entering] > 0
+            if phase == 1:
+                positive_rows[1] = False  # Exclude the objective function row in phase 1
+            positive_ratios = (
+                tableau.loc[positive_rows, "RHS"] / tableau.loc[positive_rows, idx_entering]
+            )
+            idx_departing = positive_ratios.idxmin()
+        elif method == "dual":
+            # choose departing variable
+            non_obj_rhs = tableau.iloc[1:, -1]  # exclude the objective row
+            if non_obj_rhs.min() >= 0:
+                return None  # If all RHS values are non-negative, the solution is optimal
+            idx_departing = non_obj_rhs.idxmin()
+
+            # choose entering variable
+            departing_row = tableau.iloc[idx_departing, :-1]
+            negative_cols = departing_row < 0
+            ratios = tableau.iloc[0, :-1][negative_cols] / departing_row[negative_cols]
+            if ratios.empty:
+                raise ValueError("Problem is unbounded")
+            idx_entering = ratios.idxmax()
+
+        return idx_entering, idx_departing
 
     def get_dual(self):
         A_dual = self.A.T
@@ -303,7 +340,10 @@ class LinearOptimizationProblem:
             variable_constraints_dual,
         )
 
-    def initialize(self):
+    def initialize(self, simplify=False):
+        if simplify:
+            self.simplify_LOP()
+
         if not self.initialized:
             needs_helpers = any(relation in ["=", ">="] for relation in self.relations)
             self.phase = 1 if needs_helpers else 2
@@ -311,28 +351,48 @@ class LinearOptimizationProblem:
             self.create_tableau(needs_helpers)  # Create the initial tableau
             self.initialized = True
 
-    def solve(self):
+    def simplify_LOP(self):
+        if self.objective_type == "min":
+            self.c *= -1
+            self.b0 *= -1
+            self.objective_type = "max"
+
+        for idx, relation in enumerate(self.relations):
+            if relation == ">=":
+                self.A[idx] *= -1
+                self.b[idx] *= -1
+                self.relations[idx] = "<="
+
+    def solve(self, method="primal"):
         if not self.initialized:
             raise Exception("Problem not initialized")
 
+        if method not in ["primal", "dual"]:
+            raise ValueError(f"Invalid method: {method}")
+
+        if method == "primal":
+            convergence_fn = self.check_for_optimality
+        elif method == "dual":
+            convergence_fn = self.check_for_feasibility
+
         if self.phase == 1:
-            optimality_phase1 = self.check_for_optimality()
+            convergence = convergence_fn()
 
-            while not optimality_phase1:
-                self.pivot()
-                optimality_phase1 = self.check_for_optimality()
+            while not convergence:
+                self.pivot(method=method)
+                convergence = convergence_fn()
 
-                if optimality_phase1:
+                if convergence:
                     if abs(self.tableaus[-1].iloc[0, -1]) > 1e-8:
                         raise Exception("Problem not solvable")
                     else:
                         self.phase = 2
                         self.tableaus.append(self.remove_helpers(self.tableaus[-1]))
 
-        optimality_phase2 = self.check_for_optimality()
-        while not optimality_phase2:
-            self.pivot()
-            optimality_phase2 = self.check_for_optimality()
+        convergence_phase2 = convergence_fn()
+        while not convergence_phase2:
+            self.pivot(method=method)
+            convergence_phase2 = convergence_fn()
 
         self.x = self.extract_solution()
 
@@ -354,7 +414,7 @@ class LinearOptimizationProblem:
 
         # Adding the objective coefficients row
         obj_row = ["{:.2f}".format(val) for val in self.c] + [
-            "Obj. Func.",
+            f"{self.objective_type} RHS",
             "{:.2f}".format(self.b0),
         ]
         pt.add_row(obj_row)
@@ -415,7 +475,7 @@ class LinearOptimizationProblem:
         tableau_str = str(pt)
 
         if display_basicsolution:
-            solution = LinearOptimizationProblem.extract_solution(idx)
+            solution = self.extract_solution(idx)
             solution_str = self.get_solution_str(solution, rounding_accuracy=rounding_accuracy)
             tableau_str += f"\nBasic solution: {solution_str}"
 
@@ -447,23 +507,24 @@ if __name__ == "__main__":
     in_file = "in.yaml"
     print(f"Read from file: {in_file}")
     LOP = LinearOptimizationProblem.create_from_yaml(in_file)
-    LOP.initialize()
+    LOP.initialize(simplify=True)
 
     print("Constraints:")
     print(LOP.get_constraints_str())
 
     # simple solve
-    # LOP.solve()
-    # print(LOP.get_tableau_str_all(display_basicsolution=True))
+    LOP.solve(method="dual")
+    print(LOP.get_tableau_str_all(display_basicsolution=True))
 
-    LOP_dual = LOP.get_dual()
-    LOP_dual.initialize()
-    print("\nDual problem:")
-    print(LOP_dual.get_constraints_str())
+    # print("*** Dual ***")
 
-    # simple solve dual
-    LOP_dual.solve()
-    print(LOP_dual.get_tableau_str_all(display_basicsolution=True, rounding_accuracy=4))
+    # LOP_dual = LOP.get_dual()
+    # LOP_dual.initialize()
+    # print(LOP_dual.get_constraints_str())
+
+    # # simple solve dual
+    # LOP_dual.solve()
+    # print(LOP_dual.get_tableau_str_all(display_basicsolution=True, rounding_accuracy=4))
 
     print("\n*** END ***")
 

@@ -196,6 +196,10 @@ class LinearOptimizationProblemTests(unittest.TestCase):
         self.assertDictAlmostEqual(x_primal, x_primal_expected)
         self.assertDictAlmostEqual(x_dual, x_dual_expected)
 
+        x_primal_arr = np.array([v for k, v in LOP_primal.x.items() if k.startswith("x")])[1:]
+        x_dual_arr = np.array([v for k, v in LOP_dual.x.items() if k.startswith("x")])[1:]
+        self.assertAlmostEqual(LOP_primal.c @ x_primal_arr, LOP_primal.b @ x_dual_arr)
+
 
 if __name__ == "__main__":
     unittest.main()
